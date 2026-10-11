@@ -6,7 +6,7 @@
 //   CC1101 SCK  -> GPIO18   (PIN_SCK)
 //   CC1101 SO   -> GPIO19   (PIN_MISO)   (a.k.a. MISO / GDO1)
 //   CC1101 SI   -> GPIO23   (PIN_MOSI)
-//   CC1101 CSN  -> GPIO5    (PIN_CSN)
+//   CC1101 CSN  -> GPIO27   (PIN_CSN)
 //   GDO0/GDO2   -> not used (polling driver)
 //   + attach a 433 MHz antenna (~17.3 cm wire for a quarter wave) before transmitting!
 
@@ -19,7 +19,7 @@
 static constexpr int8_t PIN_SCK  = 18;
 static constexpr int8_t PIN_MISO = 19;
 static constexpr int8_t PIN_MOSI = 23;
-static constexpr int8_t PIN_CSN  = 5;
+static constexpr int8_t PIN_CSN  = 27;
 
 // Radio parameters
 static constexpr double   RF_FREQ_MHZ   = 433.92;   // carrier frequency
@@ -55,16 +55,16 @@ void setup() {
 
 void loop() {
     // ---- RX ----
-    uint8_t buf[CC1101::MAX_PAYLOAD];
-    CC1101::RxInfo info;
-    int16_t n = radio.receive(buf, sizeof(buf), &info);
-    if (n > 0) {
-        Serial.printf("RX %d bytes, RSSI=%d dBm, LQI=%u: ", n, info.rssiDbm, info.lqi);
-        for (int i = 0; i < n; i++) Serial.printf("%02X ", buf[i]);
-        Serial.print(" | ");
-        for (int i = 0; i < n; i++) Serial.print((buf[i] >= 32 && buf[i] < 127) ? (char)buf[i] : '.');
-        Serial.println();
-    }
+    // uint8_t buf[CC1101::MAX_PAYLOAD];
+    // CC1101::RxInfo info;
+    // int16_t n = radio.receive(buf, sizeof(buf), &info);
+    // if (n > 0) {
+    //     Serial.printf("RX %d bytes, RSSI=%d dBm, LQI=%u: ", n, info.rssiDbm, info.lqi);
+    //     for (int i = 0; i < n; i++) Serial.printf("%02X ", buf[i]);
+    //     Serial.print(" | ");
+    //     for (int i = 0; i < n; i++) Serial.print((buf[i] >= 32 && buf[i] < 127) ? (char)buf[i] : '.');
+    //     Serial.println();
+    // }
 
     // ---- TX ----
     if (TX_ENABLED && millis() - lastTx >= TX_INTERVAL_MS) {
