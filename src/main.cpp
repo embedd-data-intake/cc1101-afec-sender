@@ -1,41 +1,21 @@
-// CC1101 (433 MHz) <-> ESP32, Arduino framework.
-//
-//   CC1101 VCC  -> 3V3
-//   CC1101 GND  -> GND
-//   CC1101 SCK  -> GPIO18   (PIN_SCK)
-//   CC1101 SO   -> GPIO19   (PIN_MISO)   (a.k.a. MISO / GDO1)
-//   CC1101 SI   -> GPIO23   (PIN_MOSI)
-//   CC1101 CSN  -> GPIO27   (PIN_CSN)
-//   GDO0        -> GPIO26   (PIN_GDO0)   only for interrupt mode (USE_IRQ)
-//   GDO2        -> GPIO16   (PIN_GDO2)   (not used)
-//   + attach a 433 MHz antenna (~17.3 cm wire for a quarter wave) before transmitting!
-
 #include <Arduino.h>
+#include <Wire.h>
 #include <SPI.h>
+#include <Adafruit_AHTX0.h>
+#include <ScioSense_ENS16x.h>
+
 #include "cc1101.h"
 #include "hal/cc1101_hal_arduino.h"   // swap for your own HAL on other frameworks
 #include "afec_node.h"
 #include "afec_platform_arduino.h"
 
-static constexpr int8_t PIN_SCK  = 18;
-static constexpr int8_t PIN_MISO = 19;
-static constexpr int8_t PIN_MOSI = 23;
-static constexpr int8_t PIN_CSN  = 27;
-static constexpr int8_t PIN_GDO0 = 26;
-static constexpr int8_t PIN_GDO2 = 16;
-
-static constexpr int8_t NODE_ID = 1;
-
-// Radio parameters
-static constexpr double   RF_FREQ_MHZ   = 433.92;
-static constexpr uint16_t RF_SYNC_WORD  = 0x6B1D;
-static constexpr int8_t   RF_TX_DBM     = 0;
-
-static constexpr bool     USE_IRQ        = true;
-static constexpr uint32_t TX_INTERVAL_MS = 2000;
+#include "config.h"
 
 CC1101HalArduino hal(SPI, PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CSN, 4000000, PIN_GDO0);
 CC1101 radio;
+
+Adafruit_AHTX0 aht;
+ENS160 ens160;
 
 afec::Node node;
 static uint32_t counter = 0;
@@ -56,12 +36,16 @@ void setup() {
 
     if (!radio.begin(hal, cfg)) {
         Serial.println("CC1101 not found - check wiring/power");
-        while (true) delay(1000);
+        // while (true) delay(1000);
     }
     if (USE_IRQ) {
         if (!radio.enableInterrupt()) Serial.println("IRQ setup failed, falling back to polling");
     }
     Serial.printf("CC1101 ready, VERSION=0x%02X, f=%.3f MHz\n", radio.version(), RF_FREQ_MHZ);
+
+    aht.begin();
+    ens160.begin(&Wire, ENS160_ADDR);
+    ens160.startStandardMeasure();
 
     node.begin(radio, nc, afec::arduinoPlatform());
 }
@@ -71,8 +55,42 @@ void loop() {
 
     if (millis() - lastTx >= TX_INTERVAL_MS) {
         lastTx = millis();
+        // char msg[32];
+        // int len = snprintf(msg, sizeof(msg), "hello #%lu", (unsigned long)counter++);
+
+        ens160.wait();
+        sensors_event_t tempEvent, humidityEvent;
+        aht.getEvent(&humidityEvent, &tempEvent);
+        ens160.writeCompensation(tempEvent.temperature, humidityEvent.relative_humidity);
+        ens160.update();
+
+        unsigned long temperature = (unsigned long)((tempEvent.temperature) * 100.);
+        unsigned long humidity    = (unsigned long)(humidityEvent.relative_humidity * 100.);
+        unsigned long ppm         = (unsigned long)(ens160.getEco2() * 100.);
+
         char msg[32];
-        int len = snprintf(msg, sizeof(msg), "hello #%lu", (unsigned long)counter++);
+        int len = snprintf(msg, sizeof(msg), "t:%lu;h:%lu;p:%lu;", temperature, humidity, ppm);
+
         afec::Result result = node.send(2, (const uint8_t*)msg, len);
+
+        Serial.println(msg);
+        switch (result)
+        {
+        case afec::Result::OK:
+            Serial.print("OK");
+            break;
+        case afec::Result::DUTY_LIMIT:
+            Serial.print("DUTY_LIMIT");
+            break;
+        case afec::Result::NO_ACK:
+            Serial.print("NO_ACK");
+            break;
+        case afec::Result::TOO_LONG:
+            Serial.print("TOO_LONG");
+            break;
+        case afec::Result::RADIO_ERR:
+            Serial.print("RADIO_ERR");
+            break;
+        }
     }
 }
