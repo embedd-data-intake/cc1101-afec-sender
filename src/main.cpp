@@ -5,11 +5,11 @@
 #include <Adafruit_BMP3XX.h>
 #include <ScioSense_ENS16x.h>
 
-#include "cc1101.h"
-#include "hal/cc1101_hal_arduino.h"   // swap for your own HAL on other frameworks
-#include "afec_node.h"
-#include "afec_platform_arduino.h"
+#include <cc1101.h>
+#include <hal/cc1101_hal_arduino.h>
+#include <afec_node.h>
 
+#include "afec_platform_arduino.h"
 #include "config.h"
 
 CC1101HalArduino hal(SPI, PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CSN, 4000000, PIN_GDO0);
@@ -61,8 +61,6 @@ void loop() {
 
     if (millis() - lastTx >= TX_INTERVAL_MS) {
         lastTx = millis();
-        // char msg[32];
-        // int len = snprintf(msg, sizeof(msg), "hello #%lu", (unsigned long)counter++);
 
         ens160.wait();
         sensors_event_t tempEvent, humidityEvent;
@@ -78,7 +76,7 @@ void loop() {
         char msg[32];
         int len = snprintf(msg, sizeof(msg), "t:%lu;h:%lu;p:%lu;m:%lu;", temperature, humidity, pressure, ppm);
 
-        afec::Result result = node.send(2, (const uint8_t*)msg, len);
+        afec::Result result = node.send(DEST_NODE_ID, (const uint8_t*)msg, len);
 
         Serial.println(msg);
         switch (result)
