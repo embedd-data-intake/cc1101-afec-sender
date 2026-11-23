@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <Adafruit_AHTX0.h>
+#include <Adafruit_BMP3XX.h>
 #include <ScioSense_ENS16x.h>
 
 #include "cc1101.h"
@@ -14,6 +15,7 @@
 CC1101HalArduino hal(SPI, PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CSN, 4000000, PIN_GDO0);
 CC1101 radio;
 
+Adafruit_BMP3XX bmp;
 Adafruit_AHTX0 aht;
 ENS160 ens160;
 
@@ -43,7 +45,11 @@ void setup() {
     }
     Serial.printf("CC1101 ready, VERSION=0x%02X, f=%.3f MHz\n", radio.version(), RF_FREQ_MHZ);
 
+
+    Wire.begin();
+    delay(1000);
     aht.begin();
+    bmp.begin_I2C();
     ens160.begin(&Wire, ENS160_ADDR);
     ens160.startStandardMeasure();
 
@@ -64,12 +70,13 @@ void loop() {
         ens160.writeCompensation(tempEvent.temperature, humidityEvent.relative_humidity);
         ens160.update();
 
-        unsigned long temperature = (unsigned long)((tempEvent.temperature) * 100.);
+        unsigned long temperature = (unsigned long)(tempEvent.temperature * 100.);
         unsigned long humidity    = (unsigned long)(humidityEvent.relative_humidity * 100.);
+        unsigned long pressure    = (unsigned long)(bmp.readPressure() * 100.);
         unsigned long ppm         = (unsigned long)(ens160.getEco2() * 100.);
 
         char msg[32];
-        int len = snprintf(msg, sizeof(msg), "t:%lu;h:%lu;p:%lu;", temperature, humidity, ppm);
+        int len = snprintf(msg, sizeof(msg), "t:%lu;h:%lu;p:%lu;m:%lu;", temperature, humidity, pressure, ppm);
 
         afec::Result result = node.send(2, (const uint8_t*)msg, len);
 
@@ -77,19 +84,19 @@ void loop() {
         switch (result)
         {
         case afec::Result::OK:
-            Serial.print("OK");
+            Serial.println("OK");
             break;
         case afec::Result::DUTY_LIMIT:
-            Serial.print("DUTY_LIMIT");
+            Serial.println("DUTY_LIMIT");
             break;
         case afec::Result::NO_ACK:
-            Serial.print("NO_ACK");
+            Serial.println("NO_ACK");
             break;
         case afec::Result::TOO_LONG:
-            Serial.print("TOO_LONG");
+            Serial.println("TOO_LONG");
             break;
         case afec::Result::RADIO_ERR:
-            Serial.print("RADIO_ERR");
+            Serial.println("RADIO_ERR");
             break;
         }
     }

@@ -18,7 +18,7 @@ static constexpr int8_t PIN_CSN  = 27;
 static constexpr int8_t PIN_GDO0 = 26;
 static constexpr int8_t PIN_GDO2 = 16;
 
-static constexpr int8_t NODE_ID = 1;
+static constexpr int8_t NODE_ID = 2;
 
 static constexpr double   RF_FREQ_MHZ   = 433.92;
 static constexpr uint16_t RF_SYNC_WORD  = 0x6B1D;
@@ -27,11 +27,9 @@ static constexpr int8_t   RF_TX_DBM     = 0;
 static constexpr bool     USE_IRQ        = true;
 static constexpr uint32_t TX_INTERVAL_MS = 2000;
 
-
-static constexpr uint8_t BMP_085_ADDR = 0x77;
+static constexpr uint8_t BMP_390_ADDR = 0x77;
 static constexpr uint8_t AHT10_ADDR = 0x38;
 static constexpr uint8_t ENS160_ADDR = 0x52;
-static constexpr uint8_t PAIR_ADDR = 0x55;
 static constexpr uint8_t MMHG_TO_PA = 133.322;
 
 #define DEBUG
