@@ -23,6 +23,15 @@ afec::Node node;
 static uint32_t counter = 0;
 static uint32_t lastTx  = 0;
 
+void debugPrint(const char *format, ...) {
+    char buf[192];
+    va_list ap;
+    va_start(ap, format);
+    int n = vsnprintf(buf, sizeof buf, format, ap);
+    va_end(ap);
+    Serial.write((const uint8_t*)buf, n < (int)sizeof buf ? n : sizeof buf - 1);
+}
+
 void setup() {
     Serial.begin(115200);
     delay(500);
@@ -35,6 +44,8 @@ void setup() {
     cfg.hwCrc      = false;
 
     afec::NodeConfig nc; nc.id = NODE_ID; nc.bitrateBps = 4800;
+
+    node.printDebug = debugPrint;
 
     if (!radio.begin(hal, cfg)) {
         Serial.println("CC1101 not found - check wiring/power");
@@ -77,25 +88,5 @@ void loop() {
         int len = snprintf(msg, sizeof(msg), "t:%lu;h:%lu;p:%lu;m:%lu;", temperature, humidity, pressure, ppm);
 
         afec::Result result = node.send(DEST_NODE_ID, (const uint8_t*)msg, len);
-
-        Serial.println(msg);
-        switch (result)
-        {
-        case afec::Result::OK:
-            Serial.println("OK");
-            break;
-        case afec::Result::DUTY_LIMIT:
-            Serial.println("DUTY_LIMIT");
-            break;
-        case afec::Result::NO_ACK:
-            Serial.println("NO_ACK");
-            break;
-        case afec::Result::TOO_LONG:
-            Serial.println("TOO_LONG");
-            break;
-        case afec::Result::RADIO_ERR:
-            Serial.println("RADIO_ERR");
-            break;
-        }
     }
 }
