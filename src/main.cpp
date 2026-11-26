@@ -49,19 +49,19 @@ void setup() {
 
     if (!radio.begin(hal, cfg)) {
         Serial.println("CC1101 not found - check wiring/power");
-        // while (true) delay(1000);
+        while (true) delay(1000);
     }
     if (USE_IRQ) {
         if (!radio.enableInterrupt()) Serial.println("IRQ setup failed, falling back to polling");
     }
     Serial.printf("CC1101 ready, VERSION=0x%02X, f=%.3f MHz\n", radio.version(), RF_FREQ_MHZ);
 
-
     Wire.begin();
     delay(1000);
     aht.begin();
     bmp.begin_I2C();
     ens160.begin(&Wire, ENS160_ADDR);
+    ens160.init();
     ens160.startStandardMeasure();
 
     node.begin(radio, nc, afec::arduinoPlatform());
