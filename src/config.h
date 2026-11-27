@@ -26,7 +26,11 @@ static constexpr uint16_t RF_SYNC_WORD  = 0x6B1D;
 static constexpr int8_t   RF_TX_DBM     = 0;
 
 static constexpr bool     USE_IRQ        = true;
-static constexpr uint32_t TX_INTERVAL_MS = 2000;
+static constexpr uint32_t TX_INTERVAL_MS = 2000;   // default `run interval=`, and the legacy sensor period
+
+// Legacy mode: init the I2C sensors and send their readings every TX_INTERVAL_MS while no `run`
+// is active. Off for the campaign: the node idles until it gets a serial `run` command.
+static constexpr bool     SENSOR_TX      = false;
 
 static constexpr uint8_t BMP_390_ADDR = 0x77;
 static constexpr uint8_t AHT10_ADDR = 0x38;

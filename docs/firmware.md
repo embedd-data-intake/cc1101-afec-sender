@@ -1,74 +1,142 @@
 # Sender firmware (node 2)
 
-This describes commit `80f9af9`. The firmware is an ESP32 + CC1101 node that reads three I²C sensors every `TX_INTERVAL_MS` and sends the readings to node 1 through `afec::Node::send()`. Everything about the protocol (framing, ECC, level adaptation, logging) lives in the `cc1101-afec` library. See its `docs/`.
+This describes the firmware after the serial command layer was added (run plan P0.1, 2026-11-27). The firmware is an ESP32 + CC1101 node that idles until the orchestrator (or a person at a serial monitor) sends it commands. It switches the protocol configuration at run time and sends blocks of synthetic packets to node 1 through `afec::Node::send()`. Everything about the protocol (framing, ECC, level adaptation, logging) lives in the `cc1101-afec` library. See its `docs/`. The library is unchanged by the command layer.
 
 ## Files
 
 | File | Role |
 | --- | --- |
 | `platformio.ini` | `env:esp32dev` pulls the library from GitHub (`embedd-data-intake/cc1101-afec`, unpinned, so it follows the default branch). `env:dev` builds against `../cc1101-afec` through a symlink. Both build with `-D AFEC_LOG_LEVEL=4 -D AFEC_LOG_FORMAT=1`. |
-| `src/config.h` | Pins, node IDs, radio settings, TX interval, sensor I²C addresses |
-| `src/main.cpp` | `setup()`: radio, IRQ, sensors, `node.begin()`. `loop()`: poll, then read the sensors and send on the interval. |
+| `src/config.h` | Pins, node IDs, boot radio settings, default TX interval, `SENSOR_TX`, sensor I²C addresses |
+| `src/main.cpp` | `setup()`, the command handlers, the `run` state machine, `bench`, and the legacy sensor path |
+| `src/afec_cmd.h` | Command layer shared with the receiver: line reader, `key=value` parser, `cfg` parsing, JSON event helper, synthetic payload + CRC32. **Identical copy in the receiver.** |
 | `src/afec_platform_arduino.h` | `afec::Platform` glue (`millis`, `random`, `yield`). Identical copy in the receiver. |
 
-## Configuration (`config.h`)
+## Configuration
+
+`config.h` only sets the **boot** state:
 
 | Constant | Value | Notes |
 | --- | --- | --- |
 | `PIN_SCK` / `PIN_MISO` / `PIN_MOSI` / `PIN_CSN` | 19 / 18 / 23 / 27 | SPI at 4 MHz |
 | `PIN_GDO0` / `PIN_GDO2` | 26 / 16 | GDO0 is the RX/TX-done interrupt. GDO2 is unused. |
 | `NODE_ID` / `DEST_NODE_ID` | 2 / 1 | |
-| `RF_FREQ_MHZ` / `RF_SYNC_WORD` / `RF_TX_DBM` | 433.92 / `0x6B1D` / 0 | Must match the receiver. TX power must be one of −30, −20, −15, −10, 0, 5, 7, 10 dBm. |
+| `RF_FREQ_MHZ` / `RF_SYNC_WORD` / `RF_TX_DBM` | 433.92 / `0x6B1D` / 0 | Must match the receiver. `RF_TX_DBM` is only the boot value; `cfg tx=` changes it. |
 | `USE_IRQ` | true | Falls back to polling if `enableInterrupt()` fails |
-| `TX_INTERVAL_MS` | 2000 | |
-| `BMP_390_ADDR` / `AHT10_ADDR` / `ENS160_ADDR` | 0x77 / 0x38 / 0x52 | Only the AHT works; the BMP390 and ENS160 are out of scope and read 0. The fitted part is an AHT20 at the same address; the report says AHT20. I²C uses the default `Wire` pins (ESP32: SDA 21, SCL 22). |
-| `MMHG_TO_PA` | `uint8_t` = 133 | Unused. The `uint8_t` type truncates 133.322. |
+| `TX_INTERVAL_MS` | 2000 | Default for `run interval=`, and the legacy sensor period |
+| `SENSOR_TX` | false | Legacy mode: init the sensors and send their readings every `TX_INTERVAL_MS` while no `run` is active. Off for the campaign. |
+| `BMP_390_ADDR` / `AHT10_ADDR` / `ENS160_ADDR` | 0x77 / 0x38 / 0x52 | Only used with `SENSOR_TX`. Only the AHT works; the BMP390 and ENS160 are out of scope and read 0. |
 
-**Protocol configuration is not in `config.h`.** `main.cpp` builds `afec::NodeConfig nc` with only `id` and `bitrateBps = 4800` set. Everything else is a library default:
-- mode **C5 (AFEC)**, `initialLevel` 2;
-- 3 retries, 400 ms ACK timeout;
-- `downgradeAfter` 2, `nackStep` 2;
-- 10 % duty, 36 s burst budget.
+At boot the protocol configuration is the library default: **C5 (AFEC)**, `initialLevel` 2, 3 retries, 400 ms ACK timeout, `downgradeAfter` 2, `nackStep` 2, 10 % duty, 36 s burst. Everything except the radio frequency, sync word, data rate and duty settings can be changed with `cfg`.
 
-To run a different configuration today you have to edit `main.cpp` and reflash. The run plan (`../docs/07-run-plan.md`, P0) replaces this with a serial command layer, which has **not** been implemented yet.
+## Serial commands
+
+One command per line at 115200 baud, `<name> key=value ...`, separated by spaces. Every reply is a JSON line in the library's log format (`{"t":…,"node":2,"lv":…,"ev":…}`), so it lands in the same log as the protocol events. A rejected command logs `cmd_err` (`cmd`, `err`, `detail`) and changes nothing.
+
+| Command | Effect |
+| --- | --- |
+| `hello` | Logs `hello` (`role`, `peer`, `build`) and `cfg_ok`. Use it to identify the port and check the current configuration. Also logged once at boot. |
+| `cfg mode=<1..5> init=<0..5> retries=<0..15> ackto=<50..5000> tx=<dBm> dg=<1..15> nackstep=<1..5> rssi_min=<dBm> rssi_max=<dBm> rssi_up=<a,b,c,d,e> hys=<0..15>` | All keys are optional; an absent key keeps its current value, so the C4 policy (`rssi_*`, `hys`) can be set once and stays frozen. `mode` is the configuration number C1..C5. **`mode=3` (C3) is rejected**: it needs the missing fixed-length FEC driver patch. `tx` is −30..10 dBm; the driver rounds down to −30, −20, −15, −10, 0, 5, 7 or 10. `dg` is `downgradeAfter`. On success: `radio.begin()` + `enableInterrupt()` + `node.begin()` (logs `begin`), `resetLink(1)` (logs `link_reset`), then `cfg_ok` with the full effective configuration. |
+| `mark run=<id> block=<n> cfg=<Cx>` | Logs `mark`. `block` is required and becomes the block id written into the synthetic payloads. `run` and `cfg` are only echoed. |
+| `reset [peer=<id>]` | `resetLink(peer)`, default peer 1. Logs `link_reset`. |
+| `run n=<count> len=<12..50> interval=<ms> [block=<n>]` | Starts a block: `n` synthetic packets (default 100) of `len` bytes (default 32), one every `interval` ms (default `TX_INTERVAL_MS`), measured start to start. The first goes out at once. Logs `run_start`, one `app_tx` per packet and `block_end` at the end. Non-blocking: commands are still read between packets. |
+| `stop` | Aborts the active run; `block_end` with `aborted=1`. |
+| `stats` | Logs the cumulative `afec::Stats` counters as `stats`. They count since boot and are not reset by `cfg`. |
+| `bench [reps=<n>] [len=<payload B>]` | Cycle-count benchmark for RQ4, no radio (see below). Blocks the loop for a few seconds. |
+
+While a run is active, only `hello`, `stats`, `mark` and `stop` are accepted; anything else returns `cmd_err` `busy`.
+
+**A typical block, as the orchestrator sends it** (the receiver gets the same `cfg` and `mark` first, because its mode must match):
+
+```
+cfg mode=5 init=2
+mark run=2026-11-30-Q block=17 cfg=C5
+run n=110 len=32 interval=2000
+```
+
+Commands are read in `loop()` between sends. `node.send()` blocks for up to (1 + retries) × (airtime + ACK timeout), about 2 s, so a command can take that long to be acted on. The ESP32 serial RX buffer (256 B) holds it in the meantime.
+
+### Notes on re-initialisation
+
+- `cfg` re-runs `radio.begin()`, so the CC1101 is reset and recalibrated at every configuration switch, in every configuration alike.
+- `node.begin()` refills the 36 s duty-cycle burst budget, so every block starts with a full budget (run plan, decision 4).
+- `node.begin()` does not clear the peer table, the duplicate filter or the counters, and the 8-bit frame `seq` keeps counting. The `resetLink` that `cfg` performs puts the peer back to `initialLevel`.
+
+## Synthetic payload
+
+`len` bytes (12..50; 32 in the campaign so that every level, including RS t=8, fits):
+
+| Bytes | Content |
+| --- | --- |
+| 0–3 | `aseq`: u32 LE, application packet counter, per boot, never reset |
+| 4–5 | `block`: u16 LE, from the last `mark` (or `run block=`) |
+| 6–7 | `idx`: u16 LE, index within the run, 0-based. The warm-up packets are `idx < K_w`; the S step points are at known `idx`. |
+| 8 … len−5 | Filler: xorshift32 stream seeded from `aseq` |
+| len−4 … len−1 | CRC32 (IEEE, reflected, as zlib) over bytes 0 … len−5 |
+
+The receiver checks the CRC32 and logs `app_rx ok=0|1`, which gives RER and "delivered = hash matches".
+
+## Firmware events
+
+These come from the firmware, not the library, but use the same JSON line format. `t` and `node` as in the library schema.
+
+| ev | lv | Fields | When |
+| --- | --- | --- | --- |
+| `hello` | I | `role` (`sender`), `peer`, `build` | Boot and `hello` |
+| `cfg_ok` | I | `cfg` (`C1`..`C5`), `mode` (0-based, as in `begin`), `init_lvl`, `retries`, `ack_to_ms`, `tx_dbm`, `dg`, `nack_step`, `rssi_min`, `rssi_max`, `rssi_up` (string `"a,b,c,d,e"`), `hys` | Boot, `hello`, successful `cfg` |
+| `cmd_err` | W | `cmd`, `err`, `detail` | Rejected command; nothing was changed |
+| `radio_err` | E | `err` | `radio.begin()` failed during `cfg`. The node is not usable until the next successful `cfg` or a reboot. |
+| `irq_fallback` | W | — | `enableInterrupt()` failed after `cfg`; polling is used |
+| `mark` | I | `run`, `block`, `cfg` | `mark` |
+| `run_start` | I | `block`, `n`, `len`, `interval_ms`, `aseq0` | `run` accepted |
+| `app_tx` | I | `aseq`, `block`, `idx`, `len`, `res` (`OK`, `NO_ACK`, `DUTY_LIMIT`, `TOO_LONG`, `RADIO_ERR`), `lvl_next` (the peer level after this send, 7 = `LEVEL_NONE` in C1/C2), `dur_ms` (time inside `send()`) | After each `send()`. The library's `send`/`tx`/`send_ok` lines for this packet come just before it. |
+| `block_end` | I | `block`, `n`, `sent`, `ok`, `no_ack`, `duty_limit`, `other`, `aborted`, `dur_ms` | Run finished or stopped |
+| `stats` | I | the `afec::Stats` fields in snake_case | `stats` |
+| `bench_start` | I | `cpu_mhz`, `reps`, `plen`, `inner_len` | `bench` |
+| `bench` | I | `op`, `lvl`, `s`, `n`, `ok`, `min`, `mean`, `max` (CPU cycles) | One per measured case |
+| `bench_end` | I | — | `bench` done |
+
+## `bench` (RQ4)
+
+Runs on one node with nothing else going on. Inner length = payload + 7 (header + CRC-16), 39 B for the default 32 B payload. Per measurement it reports `min`, `mean` and `max` CPU cycles (`ESP.getCycleCount()`) over `reps` repetitions (default 200); interrupts are not disabled, so `min` is the robust figure. Divide by `cpu_mhz` for µs.
+
+| `op` | `lvl` | `s` | `ok` counts |
+| --- | --- | --- | --- |
+| `enc` | 0–5 | 0 | — (= `n`) |
+| `dec` | 0–5 | 0 … t+1 errors injected in the data part (distinct bits for Hamming/BCH, distinct bytes for RS). s = t+1 measures the failure path. | decodes that succeeded, reported `corrected == s` and restored the data |
+| `frame_enc` / `frame_dec` | 0–5, 7 | 0 | `frame_dec`: frames that decoded OK |
+| `crc16` | 7 | 0 | — |
+| `lhs_score` | 7 | 0 | — (random inputs) |
+
+Flash and RAM figures come from the `pio run` output.
 
 ## Runtime behaviour
 
-1. **`setup()`**:
-   1. Serial at 115200, then `radio.begin()`. If the chip doesn't answer it prints `CC1101 not found` and halts.
-   2. `enableInterrupt()` and a `CC1101 ready, VERSION=…` line.
-   3. Sensor init. Return values are not checked.
-   4. `node.begin()` last, which logs the `begin` event. Expect about 1.5 s of boot delay before that.
-2. **`loop()`**: `node.poll()` runs every iteration. When the interval has elapsed:
-   1. `lastTx = millis()`.
-   2. `ens160.wait()` blocks until the ENS160 has a new sample.
-   3. Read AHT (temperature, humidity), write the compensation to the ENS160, read BMP pressure and ENS160 eCO2.
-   4. Format the ASCII payload `t:<°C×100>;h:<%RH×100>;p:<Pa×100>;m:<ppm×100>;` into `char msg[32]`.
-   5. `node.send(DEST_NODE_ID, msg, len)`, which blocks. The result is ignored; the outcome is only visible in the log.
-3. **Effective period** = max(`TX_INTERVAL_MS`, sensor wait + `send()` time). `send()` can block for up to (1 + 3) × (airtime + 400 ms), which is about 2 s at the strongest level. So under heavy loss, sends can run back to back.
+1. **`setup()`**: serial at 115200, `radio.begin()` (halts with `CC1101 not found` if the chip doesn't answer), `enableInterrupt()`, a plain-text `CC1101 ready` line, sensor init only with `SENSOR_TX`, `node.begin()`, then `hello` and `cfg_ok`.
+2. **`loop()`**: `node.poll()`, then one complete command line if there is one, then either the next packet of an active run (when its interval has elapsed) or, with `SENSOR_TX`, the legacy sensor send.
+3. **Effective period** = max(`interval`, `send()` time). Under heavy loss, `send()` can take about 2 s and packets go back to back.
 
 ## Serial output
 
-- JSON Lines from the library (all events at DBG). Filter on lines starting with `{`. The schema is in `cc1101-afec/docs/afec_log_schema.md`.
-- Plain-text lines from the firmware: boot messages and IRQ fallback.
-- `debugPrint` formats into a **192 B buffer**. A longer line is cut to 191 B **with no newline**, which would merge it with the next line. The longest observed line is 177 chars (`tx`). The worst case in the campaign, with a 9-digit `t`, is about 185. The margin is small, so keep it in mind if fields are added.
+- JSON Lines from the library (all events at DBG) and from the firmware (table above). Filter on lines starting with `{`. The library schema is in `cc1101-afec/docs/afec_log_schema.md`.
+- Plain-text lines from the firmware: the boot `CC1101 ready` / `CC1101 not found` / IRQ fallback messages.
+- `debugPrint` (library lines) formats into a **192 B buffer**. A longer line is cut to 191 B **with no newline**, which would merge it with the next line. The longest observed line is 177 chars (`tx`). Firmware events use a separate 256 B field buffer; the longest, `cfg_ok`, is about 230 chars.
 
-## Known issues (code is frozen; these are recorded, not fixed)
+## Known issues (recorded, not fixed)
 
-- **The BMP390 and ENS160 don't work, and are out of scope.** Pressure and eCO2 always read 0, so the payload is `t:<4 digits>;h:<4–5 digits>;p:0;m:0;` = 22–23 B.
-- **Latent buffer overflow, harmless here.** `msg` is 32 B and `len` comes from `snprintf`'s return value, which is the untruncated length. With working sensors the string would reach about 33 chars, and `send()` would read past the buffer. With p = m = 0 the string can't exceed 23 B, so this never triggers. The campaign uses a synthetic payload anyway.
-- **The payload length changes slightly with the temperature and humidity values (22–23 B)**, and so does the airtime. That's another reason for the synthetic payload in the campaign.
-- **`ens160.wait()` blocks the loop**, including `node.poll()`. While it blocks, the node neither receives nor relays.
-- **Sensor init failures are silent.** A missing sensor yields 0 or garbage values, not an error.
+- **The BMP390 and ENS160 don't work, and are out of scope.** Only relevant with `SENSOR_TX`.
+- **Legacy sensor path:** `msg[32]` with `len` from `snprintf` is a latent over-read that can't trigger with p = m = 0; `ens160.wait()` blocks the loop; sensor init failures are silent. None of this runs in the campaign (`SENSOR_TX = false`).
 
 ## Build, flash, capture
 
 ```sh
 pio run -e dev                                     # build against ../cc1101-afec
 pio run -e dev -t upload --upload-port /dev/cu.usbserial-5   # ask before flashing
-pio device monitor -b 115200 -p /dev/cu.usbserial-5
+pio device monitor -b 115200 -p /dev/cu.usbserial-5          # type commands here
 ```
 
-On the current bench Mac, node 2 is on `/dev/cu.usbserial-5`. Both boards are CP2102 with identical serial numbers, so identify them by the `node` field in the log. For capturing and parsing logs, use `cc1101-afec-logs-parser/parse.py --mode serial` (see the parent repo).
+`pio device monitor` sends each line on Enter, so the commands can be tried by hand. On the current bench Mac, node 2 is on `/dev/cu.usbserial-5`. Both boards are CP2102 with identical serial numbers, so identify them with `hello` (`role`, `node`).
+
+Note: `env:esp32dev` pulls the library from GitHub. The command layer only uses the existing library API, so both environments work.
 
 If PlatformIO fails to download packages behind the TLS-intercepting proxy, set `REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` to `~/.config/certs/macos-bundle.pem`.
