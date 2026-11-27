@@ -118,6 +118,7 @@ Flash and RAM figures come from the `pio run` output.
 
 ## Serial output
 
+- **Serial TX buffer: 8 KB** (`Serial.setTxBufferSize(8192)` before `begin()`). With the default buffer every log line blocked ~15 ms on the UART, which inflated RTT unevenly across configurations (2026-11-27 hardware test: C5 109 ms vs C2 53 ms; with the buffer 37 vs 34 ms, the gap being the ACK airtime). DBG logging averages about 1 KB/s, well under the UART's 11.5 KB/s.
 - JSON Lines from the library (all events at DBG) and from the firmware (table above). Filter on lines starting with `{`. The library schema is in `cc1101-afec/docs/afec_log_schema.md`.
 - Plain-text lines from the firmware: the boot `CC1101 ready` / `CC1101 not found` / IRQ fallback messages.
 - `debugPrint` (library lines) formats into a **192 B buffer**. A longer line is cut to 191 B **with no newline**, which would merge it with the next line. The longest observed line is 177 chars (`tx`). Firmware events use a separate 256 B field buffer; the longest, `cfg_ok`, is about 230 chars.
