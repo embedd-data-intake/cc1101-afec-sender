@@ -6,7 +6,7 @@ This is the sender firmware (node 2) for the AFEC thesis. It runs on ESP32 + CC1
 
 The firmware is considered finished. **Do not refactor or add tests.** Only change it for a real bug found during measurement, or for something the user asks for. The planned serial command layer and synthetic payload (`../docs/07-run-plan.md`, P0) are one such request, once approved.
 
-`docs/firmware.md` lists known issues, such as the 32 B payload buffer overflow, as records. Do not fix them unasked.
+`docs/firmware.md` lists known issues as records. Do not fix them unasked. The BMP390 and ENS160 sensors don't work and are **out of scope**: pressure and eCO2 always read 0. Don't debug them or flag them.
 
 ## Layout
 

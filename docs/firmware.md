@@ -21,7 +21,7 @@ This describes commit `80f9af9`. The firmware is an ESP32 + CC1101 node that rea
 | `RF_FREQ_MHZ` / `RF_SYNC_WORD` / `RF_TX_DBM` | 433.92 / `0x6B1D` / 0 | Must match the receiver. TX power must be one of −30, −20, −15, −10, 0, 5, 7, 10 dBm. |
 | `USE_IRQ` | true | Falls back to polling if `enableInterrupt()` fails |
 | `TX_INTERVAL_MS` | 2000 | |
-| `BMP_390_ADDR` / `AHT10_ADDR` / `ENS160_ADDR` | 0x77 / 0x38 / 0x52 | The fitted part is an AHT20 at the same address; the report says AHT20. I²C uses the default `Wire` pins (ESP32: SDA 21, SCL 22). |
+| `BMP_390_ADDR` / `AHT10_ADDR` / `ENS160_ADDR` | 0x77 / 0x38 / 0x52 | Only the AHT works; the BMP390 and ENS160 are out of scope and read 0. The fitted part is an AHT20 at the same address; the report says AHT20. I²C uses the default `Wire` pins (ESP32: SDA 21, SCL 22). |
 | `MMHG_TO_PA` | `uint8_t` = 133 | Unused. The `uint8_t` type truncates 133.322. |
 
 **Protocol configuration is not in `config.h`.** `main.cpp` builds `afec::NodeConfig nc` with only `id` and `bitrateBps = 4800` set. Everything else is a library default:
@@ -55,12 +55,9 @@ To run a different configuration today you have to edit `main.cpp` and reflash. 
 
 ## Known issues (code is frozen; these are recorded, not fixed)
 
-- **Payload overflow with real sensor values.** Realistic readings produce a string longer than 31 chars, for example `t:2345;h:4567;p:10132500;m:40000;` is 33 chars.
-  - `snprintf` truncates the buffer but returns the untruncated length.
-  - `send()` then transmits `len` bytes starting at `msg`, which reads past the 32-byte buffer.
-  - In the smoke test every payload was 22 B, consistent with `p:0;m:0;`. So pressure and eCO2 were probably reading 0 (sensors absent or failing), and the overflow didn't trigger.
-  - The campaign plan uses a fixed 32 B synthetic payload instead, which avoids this.
-- **The payload length changes with the sensor values**, and so does the airtime. That's another reason for the synthetic payload in the campaign.
+- **The BMP390 and ENS160 don't work, and are out of scope.** Pressure and eCO2 always read 0, so the payload is `t:<4 digits>;h:<4–5 digits>;p:0;m:0;` = 22–23 B.
+- **Latent buffer overflow, harmless here.** `msg` is 32 B and `len` comes from `snprintf`'s return value, which is the untruncated length. With working sensors the string would reach about 33 chars, and `send()` would read past the buffer. With p = m = 0 the string can't exceed 23 B, so this never triggers. The campaign uses a synthetic payload anyway.
+- **The payload length changes slightly with the temperature and humidity values (22–23 B)**, and so does the airtime. That's another reason for the synthetic payload in the campaign.
 - **`ens160.wait()` blocks the loop**, including `node.poll()`. While it blocks, the node neither receives nor relays.
 - **Sensor init failures are silent.** A missing sensor yields 0 or garbage values, not an error.
 
