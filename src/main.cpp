@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
+#include <esp_system.h>
 #include <Adafruit_AHTX0.h>
 #include <Adafruit_BMP3XX.h>
 #include <ScioSense_ENS16x.h>
@@ -298,6 +299,8 @@ void setup() {
     }
 
     node.begin(radio, ncfg, afec::arduinoPlatform());
+    // First event after a (re)boot; campaign.py counts it when there is no serial line to watch.
+    cmd::ev('I', "boot", ",\"reason\":%u", (unsigned)esp_reset_reason());
     cmd::ev('I', "hello", ",\"role\":\"sender\",\"peer\":%u,\"build\":\"%s %s\",\"sink\":\"%s\"", DEST_NODE_ID, __DATE__, __TIME__, logsink::name());
     cmd::printCfg(ncfg, rcfg.txPowerDbm);
 }
@@ -324,6 +327,7 @@ static void sensorTx() {
 void loop() {
     node.poll();
     if (char* line = lines.poll()) handle(line);
+    if (char* line = cmd::pollRemote()) handle(line);      // afec/cmd/<tx|rx>, MQTT builds only
 
     if (run.active) {
         if (millis() - run.lastTx >= run.interval) sendOne();

@@ -84,9 +84,12 @@ These come from the firmware, not the library, but use the same JSON line format
 
 | ev | lv | Fields | When |
 | --- | --- | --- | --- |
-| `hello` | I | `role` (`sender`), `peer`, `build` | Boot and `hello` |
+| `boot` | I | `reason` (`esp_reset_reason()`: 1 power-on, 3 software, 4 panic, 7/8 watchdog, …) | Once per boot, before `hello`. Lets `campaign.py` see reboots without the serial `CC1101 ready` line. |
+| `hello` | I | `role` (`sender`), `peer`, `build`, `sink` | Boot and `hello` |
 | `cfg_ok` | I | `cfg` (`C1`..`C5`), `mode` (0-based, as in `begin`), `init_lvl`, `retries`, `ack_to_ms`, `tx_dbm`, `dg`, `nack_step`, `rssi_min`, `rssi_max`, `rssi_up` (string `"a,b,c,d,e"`), `hys` | Boot, `hello`, successful `cfg` |
 | `cmd_err` | W | `cmd`, `err`, `detail` | Rejected command; nothing was changed |
+| `cmd_rx` | I | `id`, `cmd`, `src` (`mqtt`) | A command taken from `afec/cmd/<tx\|rx>`, logged just before it runs (`id` 0 if none was given) |
+| `cmd_dup` | W | `id`, `cmd` | An MQTT command whose `id` was among the last 8: a QoS 1 redelivery, not run again |
 | `radio_err` | E | `err` | `radio.begin()` failed during `cfg`. The node is not usable until the next successful `cfg` or a reboot. |
 | `irq_fallback` | W | — | `enableInterrupt()` failed after `cfg`; polling is used |
 | `mark` | I | `run`, `block`, `cfg` | `mark` |
@@ -139,14 +142,20 @@ Added 2026-11-27 (PLAN M6). `src/afec_log_sink.h` decides where every log line g
 | `2` | mqtt | `env:dev-mqtt`. One MQTT message per line, no trailing newline, QoS 1, topic **`afec/<run_id>/<tx|rx>/log`** (`tx` = sender, `rx` = receiver). |
 | `3` | both | Serial and MQTT; for checking one against the other. |
 
-**Commands always come in over serial**, whatever the sink. With `AFEC_LOG_SINK=2` the replies (`cfg_ok`, `mark`, …) only appear on MQTT, so `campaign.py` needs an MQTT reader before it can drive an MQTT build.
+**Commands always come in over serial**, whatever the sink. With `AFEC_LOG_SINK=2` the replies (`cfg_ok`, `mark`, …) only appear on MQTT; `campaign.py --mqtt` reads them there.
+
+**Commands over MQTT (untethered nodes).** MQTT builds also take commands from **`afec/cmd/<tx|rx>`** (QoS 1, subscribed on every connect), unless built with `-D AFEC_MQTT_COMMANDS=0`. Serial keeps working alongside.
+- The esp-mqtt task only copies the message into an 8-deep queue (max 191 chars; longer, fragmented or overflowing messages are counted as `cmd_lost`). `loop()` takes one per pass with `cmd::pollRemote()` and runs it through the same `handle()` as a serial line, so parsing and the protocol are untouched.
+- A command may carry **`id=<n>`** (decimal, 32-bit). It is stripped before parsing and logged in `cmd_rx`. If the same id was among the last 8, the command is a QoS 1 redelivery: `cmd_dup` is logged and it is **not** run again (a second `cfg` would re-initialise the radio). `campaign.py --mqtt-commands` always sends an increasing id. A malformed `id` stays in the line and the command is rejected as an unknown key.
+- Latency is WiFi latency (tens of ms): fine between blocks, but the interferer's S-phase steps should stay on serial.
+- If WiFi or the broker drops there is no control channel; serial still works when a cable is attached.
 
 **How MQTT publishing works.** The protocol runs in `loop()` on core 1. `logsink::write()` copies the line into a 32 KB FreeRTOS ring buffer (`AFEC_MQTT_RING_BYTES`) and returns; it never blocks. A publisher task pinned to **core 0**, together with the WiFi driver and lwIP (pinned there by the Arduino core's sdkconfig), takes lines out and calls `esp_mqtt_client_publish` (ESP-IDF's built-in esp-mqtt, no extra library). WiFi stays on during the runs. The report's buffered-upload design (§2.3.1) does not fit, because one block at DBG level is 127–230 KB, more than the RAM left next to the WiFi stack. Caveat: esp-mqtt's own task (keepalive, PUBACKs) is not pinned in the prebuilt sdkconfig, so it can occasionally run on core 1.
 
 - **Timestamps** (`t`) are `millis()` when the line was logged, so publish delay doesn't move them.
 - **`<run_id>`** is the `run=` of the last `mark` (`/`, `+` and `#` become `_`), and `boot` until the first `mark`. The `mark` line itself goes to the new run's topic.
 - **Lost lines are counted, not hidden.** If the ring is full the line is dropped and counted. Once the ring is half free again, the publisher sends `{"ev":"log_drop","dropped":<since last report>,"total":<n>}` (level W). While the broker is unreachable the publisher holds its current line and retries every 100 ms, so new lines queue and then drop.
-- **`stats`** additionally logs `log_stats` (`sink`, `enq`, `dropped`, `pub`, `retries`, `conns`, `connected`). Check `pub` against the number of messages the broker side received from that node (§2.3.2: uploaded records are checked against node counters).
+- **`stats`** additionally logs `log_stats` (`sink`, `enq`, `dropped`, `pub`, `retries`, `conns`, `connected`, `cmd_rx`, `cmd_lost`). Check `pub` against the number of messages the broker side received from that node (§2.3.2: uploaded records are checked against node counters).
 - **`hello`** carries `"sink":"serial|mqtt|serial+mqtt|off"`.
 - **Credentials:** `src/secrets.h` is gitignored. Copy `src/secrets.example.h` and set `AFEC_WIFI_SSID`, `AFEC_WIFI_PASS` and `AFEC_MQTT_URI` (e.g. `mqtt://192.168.1.10:1883`), plus optionally `AFEC_MQTT_USER`/`AFEC_MQTT_PASS`. An MQTT build without `secrets.h` stops with an `#error` that says so. Client id: `afec-node<id>`.
 - **Footprint:** an MQTT build uses about 600 KB more flash and 24 KB more static RAM, plus the 32 KB ring on the heap. Take the RQ4 flash/RAM figures from a serial (or off) build.
