@@ -14,7 +14,8 @@ The firmware is considered finished. **Do not refactor or add tests.** Only chan
 - `src/main.cpp`: setup, command handlers (`hello`, `cfg`, `mark`, `reset`, `run`, `stop`, `stats`, `bench`), the `run` loop and the legacy sensor path. Boots in C5 (library defaults); `cfg` switches the configuration at run time.
 - `src/afec_cmd.h`: command parser, `cfg` parsing, JSON event helper, synthetic payload + CRC32. Keep it identical to the receiver's copy.
 - `src/afec_platform_arduino.h`: `afec::Platform` glue. Keep it identical to the receiver's copy.
-- `platformio.ini`: `esp32dev` uses the GitHub library; `dev` uses the `../cc1101-afec` symlink. Both use `AFEC_LOG_LEVEL=4` and `AFEC_LOG_FORMAT=1`, which the log parser needs.
+- `src/afec_log_sink.h`: log sink chosen with `-D AFEC_LOG_SINK=` (0 off, 1 serial, 2 MQTT, 3 both). Keep it identical to the receiver's copy. MQTT builds (`env:dev-mqtt`) need the gitignored `src/secrets.h` (template: `secrets.example.h`); never commit it.
+- `platformio.ini`: `esp32dev` uses the GitHub library; `dev` uses the `../cc1101-afec` symlink. Both use `AFEC_LOG_LEVEL=4` and `AFEC_LOG_FORMAT=1`, which the log parser needs, and `AFEC_LOG_SINK=1` (serial). `dev-mqtt` = `dev` with `AFEC_LOG_SINK=2`.
 
 ## Commands
 

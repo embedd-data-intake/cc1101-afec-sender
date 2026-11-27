@@ -44,7 +44,8 @@ void debugPrint(const char *format, ...) {
     va_start(ap, format);
     int n = vsnprintf(buf, sizeof buf, format, ap);
     va_end(ap);
-    Serial.write((const uint8_t*)buf, n < (int)sizeof buf ? n : sizeof buf - 1);
+    if (n < 0) return;
+    logsink::write(buf, n < (int)sizeof buf ? n : sizeof buf - 1);
 }
 
 static const char* resultName(afec::Result r) {
@@ -217,7 +218,7 @@ static void handle(char* line) {
     const char* c = a.name;
 
     if (!strcmp(c, "hello")) {
-        cmd::ev('I', "hello", ",\"role\":\"sender\",\"peer\":%u,\"build\":\"%s %s\"", DEST_NODE_ID, __DATE__, __TIME__);
+        cmd::ev('I', "hello", ",\"role\":\"sender\",\"peer\":%u,\"build\":\"%s %s\",\"sink\":\"%s\"", DEST_NODE_ID, __DATE__, __TIME__, logsink::name());
         cmd::printCfg(ncfg, rcfg.txPowerDbm);
         return;
     }
@@ -265,6 +266,7 @@ void setup() {
     Serial.begin(115200);
     delay(500);
     cmd::nodeId() = NODE_ID;
+    logsink::begin(NODE_ID, "tx");          // AFEC_LOG_SINK: off / serial / mqtt (see afec_log_sink.h)
 
     rcfg.freqMHz    = RF_FREQ_MHZ;
     rcfg.syncWord   = RF_SYNC_WORD;
@@ -274,7 +276,7 @@ void setup() {
 
     ncfg.id = NODE_ID; ncfg.bitrateBps = 4800;     // everything else: library defaults (C5)
 
-    node.printDebug = debugPrint;
+    if (logsink::enabled()) node.printDebug = debugPrint;   // null: the library skips log formatting
 
     if (!radio.begin(hal, rcfg)) {
         Serial.println("CC1101 not found - check wiring/power");
@@ -296,7 +298,7 @@ void setup() {
     }
 
     node.begin(radio, ncfg, afec::arduinoPlatform());
-    cmd::ev('I', "hello", ",\"role\":\"sender\",\"peer\":%u,\"build\":\"%s %s\"", DEST_NODE_ID, __DATE__, __TIME__);
+    cmd::ev('I', "hello", ",\"role\":\"sender\",\"peer\":%u,\"build\":\"%s %s\",\"sink\":\"%s\"", DEST_NODE_ID, __DATE__, __TIME__, logsink::name());
     cmd::printCfg(ncfg, rcfg.txPowerDbm);
 }
 

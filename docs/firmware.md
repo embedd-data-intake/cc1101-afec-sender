@@ -6,11 +6,13 @@ This describes the firmware after the serial command layer was added (run plan P
 
 | File | Role |
 | --- | --- |
-| `platformio.ini` | `env:esp32dev` pulls the library from GitHub (`embedd-data-intake/cc1101-afec`, unpinned, so it follows the default branch). `env:dev` builds against `../cc1101-afec` through a symlink. Both build with `-D AFEC_LOG_LEVEL=4 -D AFEC_LOG_FORMAT=1`. |
+| `platformio.ini` | `env:esp32dev` pulls the library from GitHub (`embedd-data-intake/cc1101-afec`, unpinned, so it follows the default branch). `env:dev` builds against `../cc1101-afec` through a symlink. Both build with `-D AFEC_LOG_LEVEL=4 -D AFEC_LOG_FORMAT=1 -D AFEC_LOG_SINK=1` (serial). `env:dev-mqtt` is `dev` with `AFEC_LOG_SINK=2`. |
 | `src/config.h` | Pins, node IDs, boot radio settings, default TX interval, `SENSOR_TX`, sensor I²C addresses |
 | `src/main.cpp` | `setup()`, the command handlers, the `run` state machine, `bench`, and the legacy sensor path |
 | `src/afec_cmd.h` | Command layer shared with the receiver: line reader, `key=value` parser, `cfg` parsing, JSON event helper, synthetic payload + CRC32. **Identical copy in the receiver.** |
 | `src/afec_platform_arduino.h` | `afec::Platform` glue (`millis`, `random`, `yield`). Identical copy in the receiver. |
+| `src/afec_log_sink.h` | Log sink: serial, MQTT or off, chosen with `AFEC_LOG_SINK` (see "Log sink" below). **Identical copy in the receiver.** |
+| `src/secrets.example.h` | Template for the gitignored `src/secrets.h` (WiFi + broker), only needed by MQTT builds |
 
 ## Configuration
 
@@ -118,10 +120,36 @@ Flash and RAM figures come from the `pio run` output.
 
 ## Serial output
 
+This section applies to the serial sink (`AFEC_LOG_SINK=1`, the default).
+
+
 - **Serial TX buffer: 8 KB** (`Serial.setTxBufferSize(8192)` before `begin()`). With the default buffer every log line blocked ~15 ms on the UART, which inflated RTT unevenly across configurations (2026-11-27 hardware test: C5 109 ms vs C2 53 ms; with the buffer 37 vs 34 ms, the gap being the ACK airtime). DBG logging averages about 1 KB/s, well under the UART's 11.5 KB/s.
 - JSON Lines from the library (all events at DBG) and from the firmware (table above). Filter on lines starting with `{`. The library schema is in `cc1101-afec/docs/afec_log_schema.md`.
 - Plain-text lines from the firmware: the boot `CC1101 ready` / `CC1101 not found` / IRQ fallback messages.
 - `debugPrint` (library lines) formats into a **192 B buffer**. A longer line is cut to 191 B **with no newline**, which would merge it with the next line. The longest observed line is 177 chars (`tx`). Firmware events use a separate 256 B field buffer; the longest, `cfg_ok`, is about 230 chars.
+
+## Log sink (serial / MQTT / off)
+
+Added 2026-11-27 (PLAN M6). `src/afec_log_sink.h` decides where every log line goes, both library lines (`debugPrint`) and firmware events (`cmd::ev`). It is chosen at build time with `-D AFEC_LOG_SINK=<bitmask>`:
+
+| Value | Sink | Notes |
+| --- | --- | --- |
+| `0` | off | `node.printDebug` stays null, so the library doesn't even format its lines; `cmd::ev` returns at once. For runs where logging must not cost anything. |
+| `1` | serial | Default (`esp32dev`, `dev`). Same output as before; what `campaign.py` reads today. No WiFi code is linked. |
+| `2` | mqtt | `env:dev-mqtt`. One MQTT message per line, no trailing newline, QoS 1, topic **`afec/<run_id>/<tx|rx>/log`** (`tx` = sender, `rx` = receiver). |
+| `3` | both | Serial and MQTT; for checking one against the other. |
+
+**Commands always come in over serial**, whatever the sink. With `AFEC_LOG_SINK=2` the replies (`cfg_ok`, `mark`, …) only appear on MQTT, so `campaign.py` needs an MQTT reader before it can drive an MQTT build.
+
+**How MQTT publishing works.** The protocol runs in `loop()` on core 1. `logsink::write()` copies the line into a 32 KB FreeRTOS ring buffer (`AFEC_MQTT_RING_BYTES`) and returns; it never blocks. A publisher task pinned to **core 0**, together with the WiFi driver and lwIP (pinned there by the Arduino core's sdkconfig), takes lines out and calls `esp_mqtt_client_publish` (ESP-IDF's built-in esp-mqtt, no extra library). WiFi stays on during the runs. The report's buffered-upload design (§2.3.1) does not fit, because one block at DBG level is 127–230 KB, more than the RAM left next to the WiFi stack. Caveat: esp-mqtt's own task (keepalive, PUBACKs) is not pinned in the prebuilt sdkconfig, so it can occasionally run on core 1.
+
+- **Timestamps** (`t`) are `millis()` when the line was logged, so publish delay doesn't move them.
+- **`<run_id>`** is the `run=` of the last `mark` (`/`, `+` and `#` become `_`), and `boot` until the first `mark`. The `mark` line itself goes to the new run's topic.
+- **Lost lines are counted, not hidden.** If the ring is full the line is dropped and counted. Once the ring is half free again, the publisher sends `{"ev":"log_drop","dropped":<since last report>,"total":<n>}` (level W). While the broker is unreachable the publisher holds its current line and retries every 100 ms, so new lines queue and then drop.
+- **`stats`** additionally logs `log_stats` (`sink`, `enq`, `dropped`, `pub`, `retries`, `conns`, `connected`). Check `pub` against the number of messages the broker side received from that node (§2.3.2: uploaded records are checked against node counters).
+- **`hello`** carries `"sink":"serial|mqtt|serial+mqtt|off"`.
+- **Credentials:** `src/secrets.h` is gitignored. Copy `src/secrets.example.h` and set `AFEC_WIFI_SSID`, `AFEC_WIFI_PASS` and `AFEC_MQTT_URI` (e.g. `mqtt://192.168.1.10:1883`), plus optionally `AFEC_MQTT_USER`/`AFEC_MQTT_PASS`. An MQTT build without `secrets.h` stops with an `#error` that says so. Client id: `afec-node<id>`.
+- **Footprint:** an MQTT build uses about 600 KB more flash and 24 KB more static RAM, plus the 32 KB ring on the heap. Take the RQ4 flash/RAM figures from a serial (or off) build.
 
 ## Known issues (recorded, not fixed)
 
